@@ -1,6 +1,6 @@
 .env
 .venv
 
-models
+models/
 whisper.cpp/
 */__pycache__
