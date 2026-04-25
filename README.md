@@ -41,7 +41,7 @@ assistant_pi/
 
 ```bash
 sudo apt update
-sudo apt install -y python3-pip python3-venv git i2c-tools portaudio19-dev sox libatlas-base-dev
+sudo apt install -y python3-pip python3-venv git i2c-tools portaudio19-dev sox libatlas-base-dev ffmpeg
 ```
 
 Enable I2C:
@@ -73,7 +73,7 @@ curl -fsSL https://ollama.com/install.sh | sh
 Pull models (required):
 
 ```bash
-ollama pull tinyllama:1.1b
+ollama pull tinyllama:latest
 ollama pull qwen2.5:0.5b
 ollama pull gemma3:270m
 ```
@@ -99,6 +99,9 @@ Set environment variable if model path differs:
 ```bash
 export WHISPER_BIN=~/assistant_pi/whisper.cpp/main
 export WHISPER_MODEL=~/assistant_pi/whisper.cpp/models/ggml-base.en.bin
+
+Note: browser microphone recordings are uploaded as WebM. The backend uses `ffmpeg`
+to convert to WAV before Whisper.cpp transcription.
 ```
 
 ## 4) Piper (TTS)

@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -123,7 +123,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
     sensor_ctx = await read_sensor_snapshot()
     system_prompt = (
-        "You are a local Raspberry Pi assistant. Keep replies concise. "
+        "You are a local assistant. Keep replies concise. "
         "When relevant, use this live sensor state: "
         f"{sensor_ctx}."
     )
@@ -177,10 +177,20 @@ async def voice_transcribe(audio: UploadFile = File(...)) -> Dict[str, str]:
 
 
 @app.post("/voice/speak")
-async def voice_speak(payload: Dict[str, str]) -> Dict[str, str]:
+async def voice_speak(payload: Dict[str, str], background_tasks: BackgroundTasks) -> FileResponse:
     text = payload.get("text", "")
-    wav = tts_engine.speak(text, playback=True)
-    return {"wav": wav}
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="text cannot be empty")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
+        wav_path = tmp_wav.name
+
+    wav = tts_engine.speak(text, wav_path=wav_path, playback=False)
+    if not wav:
+        raise HTTPException(status_code=500, detail=f"tts failed: {tts_engine.last_error or 'unknown error'}")
+
+    background_tasks.add_task(os.remove, wav)
+    return FileResponse(wav, media_type="audio/wav", filename="tts.wav")
 
 
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")

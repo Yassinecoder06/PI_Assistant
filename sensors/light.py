@@ -10,7 +10,7 @@ class LightReader:
     def __init__(self, pins: List[int] = None) -> None:
         self._lock = Lock()
         self._simulated = True
-        self._pins = pins or [23, 18, 24]
+        self._pins = pins or [18]
         self._start = time.time()
 
         try:

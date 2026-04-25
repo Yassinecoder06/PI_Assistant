@@ -9,7 +9,7 @@ services:
       - ../:/app
     command: bash -lc "pip install -r requirements.txt && uvicorn backend.main:app --host 0.0.0.0 --port 8080"
     ports:
-      - "6000:6000"
+      - "6002:6002"
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - WHISPER_BIN=/app/whisper.cpp/main

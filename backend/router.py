@@ -1,8 +1,30 @@
+import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import httpx
+
+
+def _load_local_env() -> None:
+    """Load KEY=VALUE pairs from project .env into process environment."""
+    env_path = Path(__file__).resolve().parents[1] / ".env"
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_local_env()
 
 
 @dataclass
@@ -15,10 +37,10 @@ class ModelRouter:
     """Tiny heuristic router to keep inference cheap on Raspberry Pi 3."""
 
     def __init__(self) -> None:
-        self.primary_chat_model = "tinyllama:latest"
-        self.fast_model = "qwen2.5:0.5b"
-        self.reasoning_model = "qwen3.5:0.8b"
-        self.heavy_model = "qwen3.5:2b"
+        self.primary_chat_model = os.getenv("MODEL_PRIMARY_CHAT", "tinyllama:latest")
+        self.fast_model = os.getenv("MODEL_FAST", "qwen2.5:0.5b")
+        self.reasoning_model = os.getenv("MODEL_REASONING", "qwen3.5:0.8b")
+        self.heavy_model = os.getenv("MODEL_HEAVY", "qwen3.5:2b")
 
     def route(self, user_text: str) -> RouteDecision:
         text = user_text.lower()

@@ -1,6 +1,8 @@
 import os
+import shutil
 import subprocess
-from typing import Optional
+import tempfile
+from pathlib import Path
 
 
 class WhisperSTT:
@@ -15,8 +17,26 @@ class WhisperSTT:
             return ""
         if not os.path.exists(audio_path):
             return ""
+        input_path = Path(audio_path)
+        wav_path = str(input_path)
 
-        cmd = [self.binary, "-m", self.model, "-f", audio_path, "-otxt", "-of", "/tmp/whisper_out"]
+        if input_path.suffix.lower() != ".wav":
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                return ""
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
+                wav_path = tmp_wav.name
+            try:
+                subprocess.run(
+                    [ffmpeg, "-y", "-i", str(input_path), "-ar", "16000", "-ac", "1", wav_path],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                return ""
+
+        cmd = [self.binary, "-m", self.model, "-f", wav_path, "-otxt", "-of", "/tmp/whisper_out"]
         try:
             subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             out_path = "/tmp/whisper_out.txt"
@@ -25,4 +45,10 @@ class WhisperSTT:
                     return f.read().strip()
         except Exception:
             return ""
+        finally:
+            if wav_path != str(input_path):
+                try:
+                    os.remove(wav_path)
+                except OSError:
+                    pass
         return ""

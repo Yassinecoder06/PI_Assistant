@@ -133,9 +133,37 @@
         })
       });
 
+      if (!response.ok) {
+        statusEl.textContent = 'Chat request failed.';
+        return;
+      }
+
       const data = await response.json();
       addMessage('assistant', `${data.reply} [${data.model}]`);
       statusEl.textContent = `Task: ${data.task}`;
+
+      try {
+        const ttsRes = await fetch('/voice/speak', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: data.reply })
+        });
+        if (ttsRes.ok) {
+          const audioBlob = await ttsRes.blob();
+          const audioUrl = URL.createObjectURL(audioBlob);
+          const audio = new Audio(audioUrl);
+          audio.play();
+        } else {
+          let detail = 'TTS failed. Check Piper on the Pi.';
+          try {
+            const err = await ttsRes.json();
+            if (err && err.detail) detail = String(err.detail);
+          } catch (_) {}
+          statusEl.textContent = detail;
+        }
+      } catch (_) {
+        statusEl.textContent = 'TTS failed. Check Piper on the Pi.';
+      }
 
       if (data.start_game) {
         await fetch('/game/start', { method: 'POST' });
@@ -153,7 +181,23 @@
 
     voiceBtn.addEventListener('click', async () => {
       if (!mediaRecorder || mediaRecorder.state === 'inactive') {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (!window.isSecureContext) {
+          statusEl.textContent = 'Mic requires HTTPS or localhost in most browsers.';
+          return;
+        }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          statusEl.textContent = 'Browser microphone API is unavailable.';
+          return;
+        }
+
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (_) {
+          statusEl.textContent = 'Microphone permission denied or unavailable.';
+          return;
+        }
+
         mediaRecorder = new MediaRecorder(stream);
         chunks = [];
 
@@ -165,10 +209,18 @@
           const formData = new FormData();
           formData.append('audio', file);
 
-          const res = await fetch('/voice/transcribe', { method: 'POST', body: formData });
-          const data = await res.json();
-          input.value = data.text || '';
-          statusEl.textContent = data.text ? 'Voice ready. Press Send.' : 'No speech recognized.';
+          try {
+            const res = await fetch('/voice/transcribe', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (!res.ok) {
+              statusEl.textContent = (data && data.detail) ? String(data.detail) : 'Transcription failed.';
+              return;
+            }
+            input.value = data.text || '';
+            statusEl.textContent = data.text ? 'Voice ready. Press Send.' : 'No speech recognized.';
+          } catch (_) {
+            statusEl.textContent = 'Transcription request failed.';
+          }
         };
 
         mediaRecorder.start();
