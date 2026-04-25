@@ -1,20 +1,19 @@
-# assistant_pi
+# Assistant Pi
 
-Lightweight local AI assistant platform for Raspberry Pi 3 with sensor integration, voice pipeline, and gyroscope racing game.
+Lightweight local AI assistant platform for Raspberry Pi 3 with:
 
-## Features
+- local LLM chat through Ollama
+- live sensor integration (gyro + light)
+- voice pipeline (Whisper STT + local TTS)
+- gyroscope racing mini-game
+- web dashboard hosted on the Pi
 
-- Local chat assistant using Ollama small models
-- Model router for low-latency task selection
-- Sensor endpoints (`/gyro`, `/light`) + real-time stream (`/sensor-stream`)
-- Voice pipeline: Whisper.cpp STT + Piper TTS
-- Arcade mini-game controlled by MPU6500 gyroscope tilt
-- Web dashboard hosted locally on port `8080`
+This README is aligned to the current project state in this repository.
 
 ## Project Layout
 
 ```text
-assistant_pi/
+assistant/
   backend/
     main.py
     router.py
@@ -34,14 +33,33 @@ assistant_pi/
     game.js
   docker/
     docker-compose.yml
+  .env
+  .env.example
   requirements.txt
 ```
 
-## 1) Raspberry Pi 3 Setup (Python 3.9+)
+## 1) System Requirements
+
+- Raspberry Pi 3 (arm64 recommended)
+- Python 3.9+
+- Network access for model downloads
+- I2C enabled if using physical MPU sensor
+
+Install OS packages:
 
 ```bash
 sudo apt update
-sudo apt install -y python3-pip python3-venv git i2c-tools portaudio19-dev sox libatlas-base-dev ffmpeg
+sudo apt install -y \
+  python3-pip python3-venv git i2c-tools \
+  ffmpeg cmake build-essential \
+  portaudio19-dev sox libatlas-base-dev \
+  espeak-ng
+```
+
+Optional but useful:
+
+```bash
+sudo apt install -y piper
 ```
 
 Enable I2C:
@@ -52,124 +70,245 @@ sudo raspi-config
 sudo reboot
 ```
 
-Create env and install Python deps:
+## 2) Python Environment
+
+From repo root:
 
 ```bash
-cd assistant_pi
+cd /home/berry/assistant
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-## 2) Install Ollama + Pull Small Models
+## 3) Configure Environment Variables
 
-Install Ollama (official install script):
+Copy and edit:
+
+```bash
+cp .env.example .env
+```
+
+Recommended .env values:
+
+```env
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+
+MODEL_PRIMARY_CHAT=tinyllama:latest
+MODEL_FAST=qwen2.5:0.5b
+MODEL_REASONING=qwen3:0.6b
+MODEL_HEAVY=qwen3.5:0.8b
+
+WHISPER_BIN=./whisper.cpp/build/bin/whisper-cli
+WHISPER_MODEL=./whisper.cpp/models/ggml-base.en.bin
+
+PIPER_BIN=piper
+PIPER_MODEL=./models/en_US-lessac-medium.onnx
+TTS_FALLBACK_BIN=/usr/bin/espeak-ng
+
+APP_HOST=0.0.0.0
+APP_PORT=6002
+```
+
+Notes:
+
+- The router reads model names from .env. Changing .env updates runtime behavior after restart.
+- TTS auto-falls back to espeak-ng if Piper fails.
+
+## 4) Install and Pull Ollama Models
+
+Install Ollama:
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
 ```
 
-Pull models (required):
+Pull models used by routing:
 
 ```bash
 ollama pull tinyllama:latest
 ollama pull qwen2.5:0.5b
-ollama pull gemma3:270m
+ollama pull qwen3:0.6b
+ollama pull qwen3.5:0.8b
 ```
 
-Optional:
+Optional heavier model:
 
 ```bash
-ollama pull deepseek-r1:1.5b
+ollama pull qwen3.5:2b
 ```
 
-## 3) Whisper.cpp (STT)
+## 5) Whisper.cpp STT Setup
 
 ```bash
-cd ~/assistant_pi
-git clone https://github.com/ggerganov/whisper.cpp
+cd /home/berry/assistant
+if [ ! -d whisper.cpp ]; then git clone https://github.com/ggerganov/whisper.cpp; fi
 cd whisper.cpp
 make -j2
-bash ./models/download-ggml-model.sh base.en
+if [ ! -f ./models/ggml-base.en.bin ]; then bash ./models/download-ggml-model.sh base.en; fi
 ```
 
-Set environment variable if model path differs:
+Quick check:
 
 ```bash
-export WHISPER_BIN=~/assistant_pi/whisper.cpp/main
-export WHISPER_MODEL=~/assistant_pi/whisper.cpp/models/ggml-base.en.bin
-
-Note: browser microphone recordings are uploaded as WebM. The backend uses `ffmpeg`
-to convert to WAV before Whisper.cpp transcription.
+/home/berry/assistant/whisper.cpp/build/bin/whisper-cli --help | head -n 2
 ```
 
-## 4) Piper (TTS)
+## 6) TTS Setup (Piper + Fallback)
 
-Install Piper (package name may vary by OS image):
+Place a Piper voice model at:
 
-```bash
-sudo apt install -y piper
+```text
+/home/berry/assistant/models/en_US-lessac-medium.onnx
 ```
 
-Download a small voice model to `~/assistant_pi/models` and set:
+Current behavior in this project:
+
+- first try Piper
+- if Piper is unavailable/broken, auto-fallback to espeak-ng
+
+Manual checks:
 
 ```bash
-export PIPER_BIN=piper
-export PIPER_MODEL=~/assistant_pi/models/en_US-lessac-medium.onnx
+command -v piper || true
+command -v espeak-ng
 ```
 
-## 5) Run the Platform
+If Piper errors about missing libs, fallback still allows TTS to work.
 
-From project root:
+## 7) Run the App
 
 ```bash
-cd ~/assistant_pi
+cd /home/berry/assistant
 source .venv/bin/activate
-uvicorn backend.main:app --host 0.0.0.0 --port 8080
+set -a && source .env && set +a
+uvicorn backend.main:app --host "$APP_HOST" --port "$APP_PORT"
 ```
 
 Open:
 
-- `http://raspberrypi:8080`
-- `http://<pi-ip>:8080`
+- http://raspberrypi:6002
+- http://<pi-ip>:6002
 
-## API Endpoints
+## 8) HTTPS for Browser Microphone
 
-- `GET /gyro` -> current gyroscope values
-- `GET /light` -> light sensor value
-- `WebSocket /sensor-stream` -> live gyro + light + button stream
-- `POST /chat` -> assistant chat + model routing
-- `POST /game/start` -> start racing game
+Important: microphone capture in browsers requires secure context.
 
-Additional voice/game helpers:
+- works on localhost
+- or works on HTTPS URL
+- often blocked on plain HTTP IP addresses
 
-- `POST /voice/transcribe`
-- `POST /voice/speak`
-- `POST /game/comment`
+For LAN HTTPS, Caddy is recommended.
 
-## Model Routing Logic
-
-Current routing (`backend/router.py`):
-
-- Sensor queries -> `qwen2.5:0.5b`
-- Simple reasoning/classification -> `gemma3:270m`
-- Regular chat -> `tinyllama:1.1b`
-- Heavy reasoning prompt keywords -> `deepseek-r1:1.5b` (optional)
-
-## Performance Notes for Pi 3
-
-- Keep `num_ctx` small (1024) and answer length limited
-- Use one request at a time for best responsiveness
-- Prefer quantized smallest available model variants in Ollama
-- Run without Docker for lowest RAM overhead
-- Sensor stream runs at ~10Hz to balance CPU and responsiveness
-
-## Optional Docker Run
+Install Caddy:
 
 ```bash
-cd assistant_pi/docker
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update
+sudo apt install -y caddy
+```
+
+Create /etc/caddy/Caddyfile (replace PI_IP):
+
+```text
+https://PI_IP.nip.io {
+    reverse_proxy 127.0.0.1:6002
+    tls internal
+}
+```
+
+Apply and verify:
+
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl restart caddy
+sudo systemctl status caddy
+```
+
+Open:
+
+- https://PI_IP.nip.io
+
+Accept/trust the certificate in browser if prompted.
+
+## 9) API Endpoints
+
+- GET /gyro
+- GET /light
+- WS /sensor-stream
+- POST /chat
+- POST /game/start
+- POST /voice/transcribe
+- POST /voice/speak
+- POST /game/comment
+
+## 10) Quick Health Tests
+
+Backend listening:
+
+```bash
+ss -ltnp | grep 6002
+```
+
+Voice end-to-end self-test:
+
+```bash
+cd /home/berry/assistant
+set -a && source .env && set +a
+source .venv/bin/activate
+python - <<'PY'
+from pathlib import Path
+from voice.tts import PiperTTS
+from voice.stt import WhisperSTT
+
+wav = '/tmp/assistant_voice_test.wav'
+tts = PiperTTS()
+out = tts.speak('hello this is a local voice test', wav_path=wav, playback=False)
+print('TTS_OUT=', out)
+print('TTS_ERR=', tts.last_error)
+print('TTS_FILE=', Path(wav).exists(), Path(wav).stat().st_size if Path(wav).exists() else 0)
+
+stt = WhisperSTT()
+print('WHISPER_BIN=', stt.binary)
+print('WHISPER_MODEL_EXISTS=', Path(stt.model).exists())
+print('STT_TEXT=', stt.transcribe(wav)[:160])
+PY
+```
+
+## 11) Troubleshooting
+
+No microphone input from browser:
+
+- use HTTPS URL instead of HTTP IP URL
+- allow microphone permission in browser
+- test with a modern Chromium/Chrome/Edge build
+
+TTS returns 500:
+
+- check response detail from /voice/speak
+- verify model file exists at PIPER_MODEL
+- if Piper libs missing, fallback espeak-ng should still work
+
+STT returns empty:
+
+- verify ffmpeg is installed (webm to wav conversion)
+- verify WHISPER_BIN and WHISPER_MODEL in .env
+- restart backend after changing .env
+
+Ollama unreachable:
+
+- verify OLLAMA_BASE_URL in .env
+- ensure ollama service is running
+- pull missing models listed above
+
+## 12) Optional Docker
+
+```bash
+cd /home/berry/assistant/docker
 docker compose up -d
 ```
 
-For Pi 3, host-native execution is typically better than Docker.
+Host-native run is usually lighter and faster on Raspberry Pi 3.
