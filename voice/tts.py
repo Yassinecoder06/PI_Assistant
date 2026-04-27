@@ -1,23 +1,27 @@
-import os
 import shutil
 import subprocess
 from pathlib import Path
+
+from backend.config import PIPER_BIN, PIPER_MODEL, TTS_FALLBACK_BIN
 
 
 class PiperTTS:
     """Wrapper for piper executable with optional espeak-ng fallback."""
 
     def __init__(self) -> None:
-        self.binary = os.getenv("PIPER_BIN", "piper")
-        self.model = os.getenv("PIPER_MODEL", "./models/en_US-lessac-medium.onnx")
-        self.fallback_binary = os.getenv("TTS_FALLBACK_BIN", "espeak-ng")
+        self.binary = PIPER_BIN
+        self.model = PIPER_MODEL
+        self.fallback_binary = TTS_FALLBACK_BIN
         self.last_error = ""
+        self._resolved_piper = self._resolve_binary(self.binary)
+        self._piper_error = self._validate_piper()
 
-    def _resolve_binary(self) -> str:
-        if os.path.isabs(self.binary) or self.binary.startswith("."):
-            return self.binary if Path(self.binary).exists() else ""
+    @staticmethod
+    def _resolve_binary(binary: str) -> str:
+        if Path(binary).is_absolute() or binary.startswith("."):
+            return binary if Path(binary).exists() else ""
 
-        resolved = shutil.which(self.binary)
+        resolved = shutil.which(binary)
         if resolved:
             return resolved
 
@@ -43,50 +47,45 @@ class PiperTTS:
         stderr_text = proc.stderr.decode("utf-8", errors="ignore").strip()
         return False, stderr_text or f"command exited with code {proc.returncode}"
 
+    def _validate_piper(self) -> str:
+        if not self._resolved_piper:
+            return f"piper binary not found (PIPER_BIN={self.binary})"
+        if not Path(self.model).exists():
+            return f"piper model not found (PIPER_MODEL={self.model})"
+        return ""
+
     def speak(self, text: str, wav_path: str = "/tmp/piper_out.wav", playback: bool = False) -> str:
         self.last_error = ""
         if not text.strip():
-            self.last_error = "empty text"
-            return ""
+            raise ValueError("text cannot be empty")
 
-        binary = self._resolve_binary()
-        piper_error = ""
-
+        piper_error = self._piper_error
         try:
-            if binary and self._is_espeak_binary(binary):
-                ok, err = self._try_command([binary, "-w", wav_path], text)
+            if not piper_error:
+                ok, err = self._try_command(
+                    [self._resolved_piper, "--model", self.model, "--output_file", wav_path],
+                    text,
+                )
                 if not ok:
                     piper_error = err
-            elif binary and Path(self.model).exists():
-                ok, err = self._try_command([binary, "--model", self.model, "--output_file", wav_path], text)
-                if not ok:
-                    piper_error = err
-            elif not binary:
-                piper_error = f"piper binary not found (PIPER_BIN={self.binary})"
-            else:
-                piper_error = f"piper model not found (PIPER_MODEL={self.model})"
 
             if not Path(wav_path).exists() or Path(wav_path).stat().st_size == 0:
-                fallback = shutil.which(self.fallback_binary) if not Path(self.fallback_binary).exists() else self.fallback_binary
-                if fallback:
-                    proc_fb = subprocess.run(
-                        [fallback, "-w", wav_path, text],
-                        check=False,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
+                fallback = self._resolve_binary(self.fallback_binary)
+                if not fallback:
+                    raise FileNotFoundError(
+                        f"espeak-ng fallback binary not found (TTS_FALLBACK_BIN={self.fallback_binary}); "
+                        f"piper error: {piper_error}"
                     )
-                    if proc_fb.returncode != 0:
-                        fb_err = proc_fb.stderr.decode("utf-8", errors="ignore").strip()
-                        self.last_error = f"piper error: {piper_error or 'unknown'}; espeak fallback error: {fb_err or proc_fb.returncode}"
-                        return ""
-                else:
-                    self.last_error = f"piper error: {piper_error or 'unknown'}; espeak fallback binary not found"
-                    return ""
+                ok, err = self._try_command([fallback, "-w", wav_path], text)
+                if not ok:
+                    raise RuntimeError(
+                        f"piper error: {piper_error}; espeak fallback error: {err}"
+                    )
 
             if playback:
                 subprocess.run(["aplay", wav_path], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-            return wav_path if Path(wav_path).exists() else ""
+            return wav_path
         except Exception as exc:
             self.last_error = str(exc)
-            return ""
+            raise

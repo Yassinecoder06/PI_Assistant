@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from backend.config import OLLAMA_BASE_URL
 from backend.router import ModelRouter, OllamaClient, detect_start_game_intent
 from game.game_logic import GameState
 from sensors.gyro import GyroReader
@@ -31,12 +32,16 @@ app.add_middleware(
 )
 
 router = ModelRouter()
-ollama = OllamaClient(base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))
+ollama = OllamaClient(base_url=OLLAMA_BASE_URL)
 gyro = GyroReader()
 light = LightReader()
 game = GameState()
-stt_engine = WhisperSTT()
-tts_engine = PiperTTS()
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    app.state.stt = WhisperSTT()
+    app.state.tts = PiperTTS()
 
 
 class ChatRequest(BaseModel):
@@ -167,7 +172,11 @@ async def voice_transcribe(audio: UploadFile = File(...)) -> Dict[str, str]:
         tmp.write(content)
         temp_path = tmp.name
 
-    text = stt_engine.transcribe(temp_path)
+    try:
+        stt_engine = app.state.stt
+        text = stt_engine.transcribe(temp_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     try:
         os.remove(temp_path)
     except OSError:
@@ -185,9 +194,12 @@ async def voice_speak(payload: Dict[str, str], background_tasks: BackgroundTasks
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
         wav_path = tmp_wav.name
 
-    wav = tts_engine.speak(text, wav_path=wav_path, playback=False)
-    if not wav:
-        raise HTTPException(status_code=500, detail=f"tts failed: {tts_engine.last_error or 'unknown error'}")
+    try:
+        tts_engine = app.state.tts
+        wav = tts_engine.speak(text, wav_path=wav_path, playback=False)
+    except Exception as exc:
+        detail = f"tts failed: {getattr(app.state.tts, 'last_error', '') or str(exc)}"
+        raise HTTPException(status_code=500, detail=detail) from exc
 
     background_tasks.add_task(os.remove, wav)
     return FileResponse(wav, media_type="audio/wav", filename="tts.wav")
